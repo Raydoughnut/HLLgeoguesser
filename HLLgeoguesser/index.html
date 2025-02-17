@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>HLL Geoguesser</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            background: #1e1e1e;
+            font-family: Arial, sans-serif;
+            color: white;
+            overflow: hidden;
+        }
+
+        .container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .scene {
+            width: 100%;
+            height: 100%;
+            background-color: black;
+            position: absolute;
+        }
+
+        #sceneImage {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .map-container {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 400px;
+            height: 300px;
+            overflow: hidden;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: transform 0.3s ease;
+            transform-origin: bottom right;
+        }
+
+            .map-container:hover {
+                transform: scale(3);
+                z-index: 1000;
+            }
+
+        .guess-btn, .next-btn {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 10px 20px;
+            font-size: 18px;
+            background: green;
+            border: none;
+            color: white;
+            cursor: pointer;
+            border-radius: 5px;
+        }
+
+        .next-btn {
+            display: none;
+            background: blue;
+        }
+
+        .coords-display {
+            position: absolute;
+            top: 10px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 16px;
+            z-index: 1001;
+        }
+        /* Soovi korral saad tooltipile ka lisastiile lisada */
+        .leaflet-tooltip.line-tooltip {
+            background: rgba(0, 0, 0, 0.7);
+            border: none;
+            color: white;
+            font-size: 12px;
+            text-align: center;
+            padding: 2px 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="coords-display" id="coordsDisplay">Click on map to see coordinates</div>
+    <div class="container">
+        <div class="scene">
+            <img id="sceneImage" src="" alt="Scene" />
+        </div>
+
+        <div class="map-container" id="mapContainer">
+            <div id="map" style="width: 100%; height: 100%;"></div>
+        </div>
+
+        <button class="guess-btn" id="guessBtn">GUESS</button>
+        <button class="next-btn" id="nextBtn">NEXT</button>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        let map, sceneImage, guessBtn, nextBtn;
+        let currentMarker = null;
+        let selectedCoords = null;
+        let correctMarker = null;
+        let lineBetween = null;
+        let scenesData = [];
+        let currentSceneIndex = 0;
+        let currentRound = 1;
+        const totalRounds = 5;
+        let totalScore = 0;
+
+        // Konstandiks: 1920px = 2000m
+        const PX_TO_M = 2000 / 1920;
+
+        document.addEventListener("DOMContentLoaded", () => {
+            sceneImage = document.getElementById("sceneImage");
+            guessBtn = document.getElementById("guessBtn");
+            nextBtn = document.getElementById("nextBtn");
+
+            fetchScenes();
+            initMap();
+
+            guessBtn.addEventListener("click", onGuess);
+            nextBtn.addEventListener("click", onNext);
+        });
+
+        function fetchScenes() {
+            fetch('/api/scenes')
+                .then(res => res.json())
+                .then(fileList =>
+                    fetch('/scenesCoords.json')
+                        .then(res => res.json())
+                        .then(coordsData => ({ fileList, coordsData }))
+                )
+                .then(({ fileList, coordsData }) => {
+                    let coordsDict = {};
+                    coordsData.forEach(({ Filename, X, Y }) => {
+                        coordsDict[Filename] = { X, Y };
+                    });
+
+                    scenesData = fileList.map(filename => ({
+                        filename,
+                        x: coordsDict[filename]?.X ?? null,
+                        y: coordsDict[filename]?.Y ?? null
+                    }));
+
+                    if (scenesData.length === 0) {
+                        alert("No scenes available.");
+                        return;
+                    }
+
+                    scenesData.sort(() => Math.random() - 0.5);
+                    loadScene();
+                })
+                .catch(error => console.error("Error loading scenes:", error));
+        }
+
+        function loadScene() {
+            if (currentMarker) { map.removeLayer(currentMarker); currentMarker = null; }
+            if (correctMarker) { map.removeLayer(correctMarker); correctMarker = null; }
+            if (lineBetween) { map.removeLayer(lineBetween); lineBetween = null; }
+
+            if (currentSceneIndex >= scenesData.length || currentRound > totalRounds) {
+                alert(`Game Over! Total Score: ${totalScore}`);
+                return;
+            }
+            sceneImage.src = scenesData[currentSceneIndex]?.filename || "";
+            selectedCoords = null;
+            guessBtn.style.display = "block";
+            nextBtn.style.display = "none";
+            document.getElementById("coordsDisplay").textContent = "Click on map to see coordinates";
+        }
+
+        function initMap() {
+            const bounds = [[0, 0], [1920, 1920]];
+            map = L.map("map", {
+                crs: L.CRS.Simple,
+                attributionControl: false,
+                minZoom: -2.5,
+                maxZoom: 1
+            });
+
+            L.imageOverlay("Maps/SME_SP_NoHQ.png", bounds).addTo(map);
+            map.fitBounds(bounds);
+            map.setView([960, 960], -2.5);
+
+            map.on("click", (e) => {
+                document.getElementById("coordsDisplay").textContent = `Clicked: X=${Math.round(e.latlng.lng)}, Y=${Math.round(e.latlng.lat)}`;
+                if (currentMarker) map.removeLayer(currentMarker);
+                currentMarker = L.marker(e.latlng, {
+                    icon: L.icon({
+                        iconUrl: 'pinpoint.png',
+                        iconSize: [20, 20],
+                        iconAnchor: [10, 10]
+                    }),
+                    draggable: true
+                }).addTo(map);
+                selectedCoords = e.latlng;
+
+                currentMarker.on("dragend", function (event) {
+                    selectedCoords = event.target.getLatLng();
+                });
+            });
+        }
+
+        // Uus funktsioon eukleidilise kauguse arvutamiseks kahe punkti vahel (pixelites)
+        function getPixelDistance(latlng1, latlng2) {
+            const dx = latlng1.lng - latlng2.lng;
+            const dy = latlng1.lat - latlng2.lat;
+            return Math.sqrt(dx * dx + dy * dy);
+        }
+
+        function onGuess() {
+            if (!selectedCoords) {
+                alert("Please select a location on the map first!");
+                return;
+            }
+            guessBtn.style.display = "none";
+            nextBtn.style.display = "block";
+
+            let scene = scenesData[currentSceneIndex];
+            let correctLocation = (scene.x !== null && scene.y !== null)
+                ? L.latLng(scene.y, scene.x)
+                : null;
+            if (correctLocation) {
+                // Valge lipuke 2x väiksema musta taustaga, ankrukoht ringi keskel.
+                correctMarker = L.marker(correctLocation, {
+                    icon: L.divIcon({
+                        className: 'correct-marker',
+                        html: '<div style="background: black; border-radius: 50%; width: 10px; height: 10px; display: flex; align-items: center; justify-content: center;"><div style="color: white; font-size: 5px;">⚑</div></div>',
+                        iconSize: [10, 10],
+                        iconAnchor: [5, 5]
+                    })
+                }).addTo(map);
+            }
+
+            if (selectedCoords && correctLocation) {
+                let pixelDistance = getPixelDistance(selectedCoords, correctLocation);
+                let meterDistance = pixelDistance * PX_TO_M;
+                // Joon valitud ja õige asukoha vahel: peenem ja valge, weight 2.
+                lineBetween = L.polyline([selectedCoords, correctLocation], { color: 'white', weight: 2 }).addTo(map);
+                // Lisa joone peale tooltip, mis kuvab kaugust.
+                lineBetween.bindTooltip(`Distance: ${meterDistance.toFixed(2)} m`, { permanent: true, direction: 'center', className: 'line-tooltip' }).openTooltip();
+
+                let roundScore = calculateScore(meterDistance);
+                totalScore += roundScore;
+                alert(`Round ${currentRound}: You scored ${roundScore} points!`);
+            } else {
+                alert("No correct location available for scoring.");
+            }
+        }
+
+        function onNext() {
+            currentSceneIndex++;
+            currentRound++;
+            if (currentRound > totalRounds) {
+                alert(`Game Over! Total Score: ${totalScore}`);
+                return;
+            }
+            loadScene();
+        }
+
+        function calculateScore(distance) {
+            if (distance <= 10) {
+                return 5000;
+            } else if (distance >= 400) {
+                return 0;
+            } else {
+                let score = 5000 - ((distance - 10) * (4999 / (400 - 10)));
+                return Math.round(score);
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Admin – Scenes Auto & Large</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #f0f0f0;
+            font-family: Arial, sans-serif;
+        }
+
+        .container {
+            display: flex;
+            gap: 1rem;
+            padding: 1rem;
+        }
+        /* Vasak paneel (lai 1000px) */
+        .left-panel {
+            width: 1000px;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+            .left-panel select {
+                padding: 0.5rem;
+            }
+
+            .left-panel img {
+                width: 100%;
+                border: 1px solid #ccc;
+            }
+        /* Parem paneel: kaart 1800px kõrge */
+        .map-container {
+            flex: 1;
+            border: 1px solid #ccc;
+            height: 1800px;
+            position: relative;
+        }
+
+        #map {
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Vasak paneel: Scenes + eelvaade + Save -->
+        <div class="left-panel">
+            <h3>Pick a scene:</h3>
+            <select id="sceneSelect"></select>
+
+            <h3>Preview:</h3>
+            <img id="preview" src="" alt="Preview" />
+
+            <div id="coordsInfo">No coordinates yet.</div>
+            <button id="saveBtn">Save Data</button>
+        </div>
+
+        <!-- Parem paneel: kaart -->
+        <div class="map-container">
+            <div id="map"></div>
+        </div>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        /**
+         * 1) Koordinaatide teisendus: 1920px = 2000m
+         */
+        const PX_TO_M = 2000 / 1920;
+        function pxToM(px) {
+            return px * PX_TO_M;
+        }
+
+        let scenes = [];
+        let dictOld = {};
+        let allFilenames = [];
+        let mapLoaded = false;
+        let currentMarker = null; // Aktiivne marker
+
+        // Globaalsete DOM-elementide muutujad
+        let sceneSelect, preview, coordsInfo, saveBtn;
+
+        /**
+         * 2) Kaardi algseadistus – laetakse ainult üks kord
+         */
+        function setupMap() {
+            if (mapLoaded) return;
+            mapLoaded = true;
+            console.log("🗺️ Initializing map...");
+            const mapBounds = [[0, 0], [1920, 1920]];
+            window.map = L.map("map", {
+                crs: L.CRS.Simple,
+                attributionControl: false
+            });
+            L.imageOverlay("Maps/SME_SP_NoHQ.png", mapBounds).addTo(map);
+            map.fitBounds(mapBounds);
+
+            // Kaardile klikkimine lisab markeri ja salvestab koordinaadid
+            map.on("click", e => {
+                const idx = sceneSelect.value;
+                if (idx !== null && scenes[idx]) {
+                    const lat = e.latlng.lat;
+                    const lng = e.latlng.lng;
+                    scenes[idx].x = lng;
+                    scenes[idx].y = lat;
+                    updatePreview();
+                    addMarker(lng, lat);
+                }
+            });
+        }
+
+        /**
+         * 3) Funktsioon markeri lisamiseks või uuendamiseks
+         */
+        function addMarker(x, y) {
+            if (currentMarker) {
+                currentMarker.setLatLng([y, x]);
+            } else {
+                currentMarker = L.marker([y, x], {
+                    draggable: true,
+                    icon: L.icon({
+                        iconUrl: 'pinpoint.png',
+                        iconSize: [80, 80],
+                        iconAnchor: [40, 62]
+                    })
+                }).addTo(map);
+
+                // Kui markerit lohistatakse, uuenda koordinaate
+                currentMarker.on("dragend", function (event) {
+                    const position = currentMarker.getLatLng();
+                    const idx = sceneSelect.value;
+                    if (scenes[idx]) {
+                        scenes[idx].x = position.lng;
+                        scenes[idx].y = position.lat;
+                        updatePreview();
+                    }
+                });
+            }
+        }
+
+        /**
+         * 4) Lehe laadimisel loeme failinimed (/api/scenes) ja koordinaadid (scenesCoords.json)
+         */
+        document.addEventListener("DOMContentLoaded", () => {
+            // Hankime DOM-elementide viited
+            sceneSelect = document.getElementById("sceneSelect");
+            preview = document.getElementById("preview");
+            coordsInfo = document.getElementById("coordsInfo");
+            saveBtn = document.getElementById("saveBtn");
+
+            setupMap();
+            loadAll();
+
+            // Lisa sündmuse kuulajad
+            sceneSelect.addEventListener('change', updatePreview);
+            saveBtn.addEventListener('click', saveData);
+        });
+
+        async function loadAll() {
+            try {
+                console.log("🔄 Loading scenes and coords...");
+                const sceneRes = await fetch('/api/scenes');
+                const fileList = await sceneRes.json();
+                const coordsRes = await fetch('/scenesCoords.json?ts=' + new Date().getTime());
+                let oldCoords = await coordsRes.json();
+
+                console.log("📂 Loaded fileList:", fileList);
+                console.log("📌 Loaded oldCoords:", oldCoords);
+
+                dictOld = {};
+                oldCoords.forEach(({ Filename, X, Y }) => {
+                    if (Filename) {
+                        let cf = normalName(Filename);
+                        dictOld[cf] = { X, Y };
+                    }
+                });
+
+                let setOfNames = new Set();
+                fileList.forEach(fname => setOfNames.add(normalName(fname)));
+                Object.keys(dictOld).forEach(cf => setOfNames.add(cf));
+                allFilenames = Array.from(setOfNames);
+
+                scenes = allFilenames.map(cf => {
+                    let realName = findOriginalName(cf, fileList) || cf;
+                    let XY = dictOld[cf] || { X: null, Y: null };
+                    return { filename: realName, x: XY.X, y: XY.Y };
+                });
+
+                console.log("🔄 Scenes union after merging:", scenes);
+                fillSelect();
+                sceneSelect.selectedIndex = 0;
+                updatePreview();
+            } catch (err) {
+                alert("❌ Error loading data: " + err);
+            }
+        }
+
+        /**
+         * Normaliseeri failinimi (asenda \ -> /, trim())
+         */
+        function normalName(fname) {
+            return String(fname).replace(/\\/g, "/").trim();
+        }
+
+        /**
+         * Leia originaalne failinimi massiivist, mille normalName vastab cf
+         */
+        function findOriginalName(cf, arr) {
+            for (let item of arr) {
+                if (normalName(item) === cf) return item;
+            }
+            return null;
+        }
+
+        /**
+         * 5) Täida rippmenüü failinimedega
+         */
+        function fillSelect() {
+            sceneSelect.innerHTML = "";
+            scenes.forEach((scene, idx) => {
+                const opt = document.createElement('option');
+                opt.value = idx;
+                opt.textContent = scene.filename;
+                sceneSelect.appendChild(opt);
+            });
+        }
+
+        /**
+         * 6) Eelvaade meetrites + lisame markeri, kui koordinaadid on olemas
+         */
+        function updatePreview() {
+            const idx = sceneSelect.value;
+            const scene = scenes[idx];
+            preview.src = scene.filename;
+            if (scene.x !== null && scene.y !== null) {
+                const xm = pxToM(scene.x).toFixed(2);
+                const ym = pxToM(scene.y).toFixed(2);
+                coordsInfo.textContent = `x=${xm} m, y=${ym} m`;
+                addMarker(scene.x, scene.y);
+            } else {
+                coordsInfo.textContent = "No coordinates yet.";
+                if (currentMarker) {
+                    map.removeLayer(currentMarker);
+                    currentMarker = null;
+                }
+            }
+        }
+
+        /**
+         * 7) Salvestamine: ainult uuendatud failid
+         */
+        async function saveData() {
+            try {
+                console.log("💾 Saving data...");
+                const coordsRes = await fetch('/scenesCoords.json?ts=' + new Date().getTime());
+                let oldCoords = await coordsRes.json();
+                let oldDict = {};
+                oldCoords.forEach(({ Filename, X, Y }) => {
+                    if (Filename) {
+                        let cf = normalName(Filename);
+                        oldDict[cf] = { X, Y };
+                    }
+                });
+
+                scenes.forEach(({ filename, x, y }) => {
+                    if (filename) {
+                        let cf = normalName(filename);
+                        if (x !== null && y !== null) {
+                            oldDict[cf] = { X: x, Y: y };
+                        }
+                    }
+                });
+
+                let newCoords = Object.entries(oldDict).map(([cf, { X, Y }]) => ({
+                    Filename: cf, X, Y
+                }));
+
+                console.log("💾 Saving updated coords:", newCoords);
+
+                const response = await fetch('/api/saveCoords', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(newCoords)
+                });
+
+                let data = await response.json();
+                alert(data.message + "\nSaved " + data.count + " scenes to scenesCoords.json");
+
+                // Laeme uuesti, et admin-lehel näeksid värskeid koordinaate
+                await loadAll();
+            } catch (err) {
+                alert("❌ Failed to save coords: " + err);
+            }
+        }
+    </script>
+</body>
+</html>
