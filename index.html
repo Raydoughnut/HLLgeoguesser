@@ -89,12 +89,12 @@
         }
         /* Soovi korral saad tooltipile ka lisastiile lisada */
         .leaflet-tooltip.line-tooltip {
-            background: rgba(0, 0, 0, 0.7);
+            background: rgba(0, 0, 0, 0.6);
             border: none;
             color: white;
-            font-size: 12px;
+            font-size: 7px;
             text-align: center;
-            padding: 2px 4px;
+            padding: 1px 1px;
         }
     </style>
 </head>
@@ -143,10 +143,10 @@
         });
 
         function fetchScenes() {
-            fetch('scenes.json')
+            fetch('/api/scenes')
                 .then(res => res.json())
                 .then(fileList =>
-                    fetch('scenesCoords.json')
+                    fetch('/scenesCoords.json')
                         .then(res => res.json())
                         .then(coordsData => ({ fileList, coordsData }))
                 )
@@ -207,7 +207,7 @@
                 if (currentMarker) map.removeLayer(currentMarker);
                 currentMarker = L.marker(e.latlng, {
                     icon: L.icon({
-                        iconUrl: 'pinpoint.png',
+                        iconUrl: 'Garry.png',
                         iconSize: [20, 20],
                         iconAnchor: [10, 10]
                     }),
@@ -241,13 +241,13 @@
                 ? L.latLng(scene.y, scene.x)
                 : null;
             if (correctLocation) {
-                // Valge lipuke 2x väiksema musta taustaga, ankrukoht ringi keskel.
+                // HQ marker pildi õiges asukohas.
                 correctMarker = L.marker(correctLocation, {
-                    icon: L.divIcon({
+                    icon: L.icon({
                         className: 'correct-marker',
-                        html: '<div style="background: black; border-radius: 50%; width: 10px; height: 10px; display: flex; align-items: center; justify-content: center;"><div style="color: white; font-size: 5px;">⚑</div></div>',
-                        iconSize: [10, 10],
-                        iconAnchor: [5, 5]
+                        iconUrl: 'HQ.png',
+                        iconSize: [20, 20],
+                        iconAnchor: [10, 10]
                     })
                 }).addTo(map);
             }
@@ -256,9 +256,10 @@
                 let pixelDistance = getPixelDistance(selectedCoords, correctLocation);
                 let meterDistance = pixelDistance * PX_TO_M;
                 // Joon valitud ja õige asukoha vahel: peenem ja valge, weight 2.
-                lineBetween = L.polyline([selectedCoords, correctLocation], { color: 'white', weight: 2 }).addTo(map);
+                lineBetween = L.polyline([selectedCoords, correctLocation], { color: 'red', weight: 0.5 }).addTo(map);
                 // Lisa joone peale tooltip, mis kuvab kaugust.
-                lineBetween.bindTooltip(`Distance: ${meterDistance.toFixed(2)} m`, { permanent: true, direction: 'center', className: 'line-tooltip' }).openTooltip();
+                lineBetween.bindTooltip(` ${meterDistance.toFixed(0)} m`, { permanent: true, direction: 'center', className: 'line-tooltip' }).openTooltip();
+
 
                 let roundScore = calculateScore(meterDistance);
                 totalScore += roundScore;
